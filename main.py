@@ -62,11 +62,14 @@ apt_db = pd.DataFrame(columns=cols)
 
 def parse_utilities_price(soup_apt) -> float:
     # Find element with "Månedlig aconto" and get its sibiling
-    div = soup_apt.find(name="div", string="Månedlig aconto").find_next_sibling()
-    # find the span and make it a number
-    return float(div.find(name="span").get_text()
-                 .replace(" kr.", "")
-                 .replace(".", ""))
+    try:
+        div = soup_apt.find(name="div", string="Månedlig aconto").find_next_sibling()
+        # find the span and make it a number
+        return float(div.find(name="span").get_text()
+                     .replace(" kr.", "")
+                     .replace(".", ""))
+    except AttributeError:
+        return 0
 
 
 def parse_move_in_price(soup_apt) -> float:
@@ -143,9 +146,14 @@ for i, apt in enumerate(all_apts):
         apt_db.at[i, key] = val
 
 
+from .databases.kbh import kbh
+kbh = kbh
+
 # i=0
 # apt = all_apts[0]
 print("end")
+
+
 
 new = apt_db[(apt_db["price"]<15000) & (apt_db["rooms"]>1)]
 
