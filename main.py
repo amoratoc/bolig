@@ -1,163 +1,166 @@
+from utils.dk_eng_dict import DK_ENG_dictionary
+from utils.hashing import hash_str
+from utils.features_to_parse import features
 import csv
+import os
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import pandas as pd
-
-# we store the URL we're scraping in a variable
-# url = "https://www.jofogas.hu/magyarorszag/muszaki-cikkek-elektronika"
-url = "https://www.boligportal.dk/lejeboliger/københavn/"
-
-# we download the page conent with the requests library
-html = requests.get(url).content
-
-# we parse the HTML content with the bs4 library
-soup = BeautifulSoup(html, 'html.parser')
-
-# we find the products using the "list-item" class
-# all_divs = soup.find_all('div', { "class": "temporaryFlexColumnClassName css-nkly31" })   #css-bq36qw  css-7r8xmo
-all_a = soup.find_all('a', {"class": "css-13jvjkd" })
-
-# we define the result variable
-all_apts = []
-# we loop through the products, and add each product's data
-# as a dict object
-for a in all_a:
-    all_apts.append({
-        "name": a.text.strip(),
-        "url": "https://www.boligportal.dk" + urllib.parse.unquote(a["href"])
-    })
+from pathlib import Path
 
 
-cols = [
-    "street",
-    "postal_code",
-    "city",
-    "neighborhood",
-    "type",
-    "description",
-    "price",
-    "utilities_price",
-    "moving_in_price",
-    "type",
-    "area",
-    "rooms",
-    "floor",
-    "furnished",
-    "sharing friendly",
-    "pets allowed",
-    "Elevator",
-    "senior friendly",
-    "only students",
-    "balcony/terrace",
-    "parking",
-    "dishwasher",
-    "washing maching",
-    "charging stand",
-    "dryer",
-    "energy label"
-]
-apt_db = pd.DataFrame(columns=cols)
+CLASS_GRID_ITEM = "css-13jvjkd"
+URL_PREFIX = "https://www.boligportal.dk"
+URL = "https://www.boligportal.dk/lejeboliger/københavn/"
 
 
-def parse_utilities_price(soup_apt) -> float:
-    # Find element with "Månedlig aconto" and get its sibiling
-    try:
-        div = soup_apt.find(name="div", string="Månedlig aconto").find_next_sibling()
-        # find the span and make it a number
-        return float(div.find(name="span").get_text()
+class BoligportalScrapper:
+
+    @classmethod
+    def update_apts_list(cls, csv_file_path: str | Path = None):
+
+        # Read the existing file or create an empty dataframe
+        if csv_file_path is not None and os.path.exists(csv_file_path):
+            df = pd.read_csv(csv_file_path)
+        else:
+            df = pd.DataFrame()
+
+        # Empty list to append all apartments
+        all_apts = []
+
+        # Create list of urls (main page does not load all apartments)
+        all_urls = [URL] + [URL + f"?offset={18*i}" for i in range(1, 10)]
+
+        # Iterate through all the urls.
+        for i, url in enumerate(all_urls):
+            print(f"Parsing page {i}")
+            url = urllib.parse.unquote(url)
+
+            # Download the page content with the requests library
+            html = requests.get(url).content
+
+            # Parse the HTML content with the bs4 library
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # Find the products that are in anchor "a" elements with class "CLASS_GRID_ITEM"
+            all_a = soup.find_all('a', {"class": CLASS_GRID_ITEM})
+
+            # we loop through the apartments, and add each product's data as a dict object
+            for a in all_a:
+                string_to_hash = a.text.strip() + urllib.parse.unquote(a["href"])
+                new_apt = {
+                    "hash": hash_str(string_to_hash),
+                    "name": a.text.strip(),
+                    "url": URL_PREFIX + urllib.parse.unquote(a["href"])
+                }
+
+                # if not (existing_list['hash'] == new_apt["hash"]).any():
+                #     all_apts.append(new_apt)
+
+                features_dict = cls.get_apt_features(new_apt["url"])
+
+                new_apt.update(features_dict)
+
+            all_apts.append(new_apt)
+
+                # else:
+                #     print("flat already exists in the list")
+
+
+
+
+
+        df = pd.DataFrame(all_apts)
+        df.to_csv('./files/all_apts.csv', index=False)
+
+        return all_apts
+
+    @staticmethod
+    def str_to_float(string: str) -> float:
+        return float(string
+                     .strip()
                      .replace(" kr.", "")
-                     .replace(".", ""))
-    except AttributeError:
-        return 0
+                     .replace(".", "")
+                     .replace(",", "")
+                     )
 
+    @classmethod
+    def parse_utilities_price(cls, soup_apt) -> float:
+        # Find element with "Månedlig aconto" and get its sibiling
+        try:
+            div = soup_apt.find(name="div", string="Månedlig aconto").find_next_sibling()
+            # find the span and make it a number
+            return cls.str_to_float(div.find(name="span").get_text())
 
-def parse_move_in_price(soup_apt) -> float:
-    # Find element with "" and get its sibiling
-    div = soup_apt.find(name="div", string="Indflytningspris").find_next_sibling()
-    # find the span and make it a number
-    return float(div.find(name="span").get_text()
-                 .replace(" kr.", "")
-                 .replace(".", ""))
+        except AttributeError:
+            return 0
 
-dictionary = {
-    "Boligtype": "type",
-    "Størrelse": "area",
-    "Værelser": "rooms",
-    "Etage": "floor",
-    "Møbleret": "furnished",
-    "Delevenlig": "sharing friendly",
-    "Husdyr tilladt": "pets allowed",
-    "Elevator": "Elevator",
-    "Seniorvenlig": "senior friendly",
-    "Kun for studerende": "only students",
-    "Altan/terrasse": "balcony/terrace",
-    "Parkering": "parking",
-    "Opvaskemaskine": "dishwasher",
-    "Vaskemaskine": "washing maching",
-    "Ladestander": "charging stand",
-    "Tørretumbler": "dryer",
-    "Energimærke": "energy label"
-}
+    @classmethod
+    def parse_move_in_price(cls, soup_apt) -> float:
+        # Find element with "" and get its sibiling
+        div = soup_apt.find(name="div", string="Indflytningspris").find_next_sibling()
+        # find the span and make it a number
+        return cls.str_to_float(div.find(name="span").get_text())
 
-def parse_apt_details(soup_apt) -> dict:
-    # find section
-    section_apt_details = soup_apt.find("h2", string="Detaljer om bolig").parent
+    @staticmethod
+    def parse_apt_details(soup_apt) -> dict:
+        # find section
+        section_apt_details = soup_apt.find("h2", string="Detaljer om bolig").parent
 
-    # Get all the properties as they share class names
-    all_atrs = section_apt_details.find_all(name="span", attrs={"class": "css-1td16zm"})
-    all_atrs_keys = [atr.text for atr in all_atrs]
+        # Get all the properties as they share class names
+        all_atrs = section_apt_details.find_all(name="span", attrs={"class": "css-1td16zm"})
+        all_atrs_keys = [atr.text for atr in all_atrs]
 
-    # Get all values of the properties as they share class names
-    all_vals = section_apt_details.find_all(name="span", attrs={"class": "css-1f8murc"})
-    all_atrs_vals = [atr.text for atr in all_vals]
+        # Get all values of the properties as they share class names
+        all_vals = section_apt_details.find_all(name="span", attrs={"class": "css-1f8murc"})
+        all_atrs_vals = [atr.text for atr in all_vals]
 
-    dict = {}
-    for i, (atr, val) in enumerate(zip(all_atrs_keys, all_atrs_vals)):
-        if atr == "Værelser":
-            val = int(val.replace(".", ""))
-        if atr == "Størrelse":
-            val = float(val.replace(" m²", ""))
-        dict[dictionary[atr]] = val
+        dict = {}
+        for i, (atr, val) in enumerate(zip(all_atrs_keys, all_atrs_vals)):
+            if atr == "Værelser":
+                val = int(val.replace(".", ""))
+            if atr == "Størrelse":
+                val = float(val.replace(" m²", ""))
+            dict[DK_ENG_dictionary[atr]] = val
 
-    return dict
+        return dict
 
+    @classmethod
+    def get_apt_features(cls, apt_url: str):
+        html_apt = requests.get(apt_url).content
+        soup_apt = BeautifulSoup(html_apt, 'html.parser')
 
-for i, apt in enumerate(all_apts):
-    html_apt = requests.get(apt['url']).content
-    soup_apt = BeautifulSoup(html_apt, 'html.parser')
+        apt_features = {}
+        # Address
+        location_div = soup_apt.find("div", {"class": "css-1gjufnd"})
+        location_text = location_div.find(name="div").get_text().split(", ")
+        apt_features["street"] = location_text[0].strip()
+        apt_features["postal_code"] = int(location_text[1].split(" ")[0].strip())
+        apt_features["city"] = location_text[1].split(" ")[1].strip()
+        apt_features["neighborhood"] = location_text[2].split(" - ")[0].strip()
 
-    # Address
-    location_div = soup_apt.find("div", {"class": "css-1gjufnd"})
-    location_text = location_div.find(name="div").get_text().split(", ")
-    apt_db.at[i, "street"] = location_text[0].strip()
-    apt_db.at[i, "postal_code"] = int(location_text[1].split(" ")[0].strip())
-    apt_db.at[i, "city"] = location_text[1].split(" ")[1].strip()
-    apt_db.at[i, "neighborhood"] = location_text[2].split(" - ")[0].strip()
+        # Apartment properties
+        apt_features["description"] = soup_apt.find("div", {"class":"css-1j674uz"}).get_text()
+        apt_features["price"] = cls.str_to_float(soup_apt.find("span", {"class": "css-1fhvb05"}).get_text())
+        apt_features["utilities_price"] = cls.parse_utilities_price(soup_apt)
+        apt_features["moving_in_price"] = cls.parse_move_in_price(soup_apt)
 
-    # Apartment properties
-    apt_db.at[i, "description"] = soup_apt.find("div", {"class": "css-1j674uz"}).get_text()
-    apt_db.at[i, "price"] = float(soup_apt.find("span", {"class": "css-1fhvb05"}).get_text().replace(".",""))
-    apt_db.at[i, "utilities_price"] = parse_utilities_price(soup_apt)
-    apt_db.at[i, "moving_in_price"] = parse_move_in_price(soup_apt)
+        apt_details = cls.parse_apt_details(soup_apt)
+        apt_features.update(apt_details)
 
-    details_dict = parse_apt_details(soup_apt)
-    for key, val in details_dict.items():
-        apt_db.at[i, key] = val
-
-
-from .databases.kbh import kbh
-kbh = kbh
-
-# i=0
-# apt = all_apts[0]
-print("end")
-
-
-
-new = apt_db[(apt_db["price"]<15000) & (apt_db["rooms"]>1)]
+        return apt_features
 
 if __name__ == '__main__':
-    print('PyCharm')
+    # Create the .csv with the list of apts with their title and url
+    all_apts = BoligportalScrapper.update_apts_list(csv_file_path="./files/all_apts.csv")
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+    # new = df[
+    #     (df["price"] < 15000) &
+    #     (df["rooms"] > 1) &
+    #     (df["neighborhood"] == "København Ø")
+    # ]
+
+    print("end")
+
