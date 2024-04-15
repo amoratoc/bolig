@@ -7,7 +7,7 @@ Frans la Cour: FG2V@kk.dk
 
 """
 
-kbh = {
+metro_train = {
     "type":"FeatureCollection",
     "features":[{
         "type":"Feature",

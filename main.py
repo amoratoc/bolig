@@ -1,6 +1,7 @@
 from utils.dk_eng_dict import DK_ENG_dictionary
 from utils.hashing import hash_str
 from utils.features_to_parse import features
+from databases.kbh import metro_train
 import csv
 import os
 import requests
@@ -8,6 +9,7 @@ from bs4 import BeautifulSoup
 import urllib.parse
 import pandas as pd
 from pathlib import Path
+from geopy.geocoders import ArcGIS
 
 
 CLASS_GRID_ITEM = "css-13jvjkd"
@@ -30,7 +32,7 @@ class BoligportalScrapper:
         all_apts = []
 
         # Create list of urls (main page does not load all apartments)
-        all_urls = [URL] + [URL + f"?offset={18*i}" for i in range(1, 10)]
+        all_urls = [URL] + [URL + f"?offset={18*i}" for i in range(1, 1)]
 
         # Iterate through all the urls.
         for i, url in enumerate(all_urls):
@@ -62,14 +64,10 @@ class BoligportalScrapper:
 
                 new_apt.update(features_dict)
 
-            all_apts.append(new_apt)
+                all_apts.append(new_apt)
 
                 # else:
                 #     print("flat already exists in the list")
-
-
-
-
 
         df = pd.DataFrame(all_apts)
         df.to_csv('./files/all_apts.csv', index=False)
@@ -126,6 +124,16 @@ class BoligportalScrapper:
 
         return dict
 
+    @staticmethod
+    def find_street_coords(street: str, postal_code: str, neighborhood: str, city: str, ):
+        # Initialize the geolocator
+        geolocator = ArcGIS()
+        # build of the street
+        street_name = street + postal_code + neighborhood + city
+        # Geocode the street name
+        location = geolocator.geocode(street_name)
+        return location.latitude, location.longitude
+
     @classmethod
     def get_apt_features(cls, apt_url: str):
         html_apt = requests.get(apt_url).content
@@ -146,8 +154,31 @@ class BoligportalScrapper:
         apt_features["utilities_price"] = cls.parse_utilities_price(soup_apt)
         apt_features["moving_in_price"] = cls.parse_move_in_price(soup_apt)
 
+        # Apartment details
         apt_details = cls.parse_apt_details(soup_apt)
         apt_features.update(apt_details)
+
+        # Apartment location
+        lat, lon = cls.find_street_coords(
+            street=apt_features["street"],
+            postal_code=str(apt_features["postal_code"]),
+            neighborhood=apt_features["neighborhood"],
+            city=apt_features["city"]
+        )
+        apt_features["latitude"] = lat
+        apt_features["longitude"] = lon
+
+        # # Find distance to metro and train
+        # stations_list = []
+        # for feature in metro_train["features"]:
+        #     stations_list.append(
+        #         {
+        #          "coords": feature["geometry"]["coordinates"][0],
+        #          "type": feature["properties"]["objekt_type"],
+        #          "name": feature["properties"]["navn"],
+        #          "kommune": feature["properties"]["kommune"],
+        #         }
+        #     )
 
         return apt_features
 
