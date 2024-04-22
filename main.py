@@ -1,5 +1,5 @@
 from utils.dk_eng_dict import DK_ENG_dictionary
-from utils.hashing import hash_str
+from utils.various import hash_str, find_nearest_stations, haversine_distance
 from utils.features_to_parse import features
 from databases.kbh import metro_train
 import csv
@@ -14,7 +14,7 @@ from geopy.geocoders import ArcGIS
 
 CLASS_GRID_ITEM = "css-13jvjkd"
 URL_PREFIX = "https://www.boligportal.dk"
-URL = "https://www.boligportal.dk/lejeboliger/københavn/"
+URL = "https://www.boligportal.dk/lejligheder,huse/københavn/"
 
 
 class BoligportalScrapper:
@@ -24,15 +24,14 @@ class BoligportalScrapper:
 
         # Read the existing file or create an empty dataframe
         if csv_file_path is not None and os.path.exists(csv_file_path):
-            df = pd.read_csv(csv_file_path)
-        else:
-            df = pd.DataFrame()
+            existing_list = pd.read_csv(csv_file_path)
 
         # Empty list to append all apartments
         all_apts = []
 
         # Create list of urls (main page does not load all apartments)
-        all_urls = [URL] + [URL + f"?offset={18*i}" for i in range(1, 1)]
+        page=123
+        all_urls = [URL] + [URL + f"?offset={18*i}" for i in range(1, 123)]
 
         # Iterate through all the urls.
         for i, url in enumerate(all_urls):
@@ -48,8 +47,15 @@ class BoligportalScrapper:
             # Find the products that are in anchor "a" elements with class "CLASS_GRID_ITEM"
             all_a = soup.find_all('a', {"class": CLASS_GRID_ITEM})
 
+            # Get the coordinates of all stations
+            stations_coords = cls.read_stations_coords()
+
             # we loop through the apartments, and add each product's data as a dict object
             for a in all_a:
+                # price_div = a.find_parent('div').find(name="div", attrs={"class": "css-dlcfcd"})
+                #
+                # div = a.find(name="div", string="DKK")
+
                 string_to_hash = a.text.strip() + urllib.parse.unquote(a["href"])
                 new_apt = {
                     "hash": hash_str(string_to_hash),
@@ -57,22 +63,34 @@ class BoligportalScrapper:
                     "url": URL_PREFIX + urllib.parse.unquote(a["href"])
                 }
 
-                # if not (existing_list['hash'] == new_apt["hash"]).any():
-                #     all_apts.append(new_apt)
-
-                features_dict = cls.get_apt_features(new_apt["url"])
-
+                # condition_to_add = csv_file_path is not None and not existing_list['hash'].eq(new_apt["hash"]).any()
+                # if csv_file_path is None or condition_to_add:
+                features_dict = cls.get_apt_features(new_apt["url"], stations_coords)
                 new_apt.update(features_dict)
-
                 all_apts.append(new_apt)
 
                 # else:
-                #     print("flat already exists in the list")
+                #     print("Not adding appartment")
 
         df = pd.DataFrame(all_apts)
         df.to_csv('./files/all_apts.csv', index=False)
 
         return all_apts
+
+    @staticmethod
+    def read_stations_coords() -> list:
+        stations_coords = []
+        for feature in metro_train["features"]:
+            coords = feature["geometry"]["coordinates"][0]
+            stations_coords.append(
+                {
+                 "coords": {"lat": coords[1], "lon": coords[0]},
+                 "type": feature["properties"]["objekt_type"],
+                 "name": feature["properties"]["navn"],
+                 "kommune": feature["properties"]["kommune"],
+                }
+            )
+        return stations_coords
 
     @staticmethod
     def str_to_float(string: str) -> float:
@@ -129,13 +147,13 @@ class BoligportalScrapper:
         # Initialize the geolocator
         geolocator = ArcGIS()
         # build of the street
-        street_name = street + postal_code + neighborhood + city
+        street_name = street + ", " + postal_code + " " + neighborhood + ", " + city
         # Geocode the street name
         location = geolocator.geocode(street_name)
         return location.latitude, location.longitude
 
     @classmethod
-    def get_apt_features(cls, apt_url: str):
+    def get_apt_features(cls, apt_url: str, stations_coords: list | None = None):
         html_apt = requests.get(apt_url).content
         soup_apt = BeautifulSoup(html_apt, 'html.parser')
 
@@ -158,27 +176,23 @@ class BoligportalScrapper:
         apt_details = cls.parse_apt_details(soup_apt)
         apt_features.update(apt_details)
 
-        # Apartment location
-        lat, lon = cls.find_street_coords(
-            street=apt_features["street"],
-            postal_code=str(apt_features["postal_code"]),
-            neighborhood=apt_features["neighborhood"],
-            city=apt_features["city"]
-        )
-        apt_features["latitude"] = lat
-        apt_features["longitude"] = lon
+        if stations_coords:
+            # Apartment location
+            lat, lon = cls.find_street_coords(
+                street=apt_features["street"],
+                postal_code=str(apt_features["postal_code"]),
+                neighborhood=apt_features["neighborhood"],
+                city=apt_features["city"]
+            )
+            apt_features["latitude"] = lat
+            apt_features["longitude"] = lon
 
-        # # Find distance to metro and train
-        # stations_list = []
-        # for feature in metro_train["features"]:
-        #     stations_list.append(
-        #         {
-        #          "coords": feature["geometry"]["coordinates"][0],
-        #          "type": feature["properties"]["objekt_type"],
-        #          "name": feature["properties"]["navn"],
-        #          "kommune": feature["properties"]["kommune"],
-        #         }
-        #     )
+            nearest_metro, distance_to_nearest_metro, nearest_s_station, distance_to_s_station = find_nearest_stations(
+                [lat, lon], stations_coords)
+            apt_features["nearest_metro"] = nearest_metro["name"]
+            apt_features["distance_to_nearest_metro"] = distance_to_nearest_metro
+            apt_features["nearest_s_station"] = nearest_s_station["name"]
+            apt_features["distance_to_s_station"] = distance_to_s_station
 
         return apt_features
 
@@ -186,12 +200,19 @@ if __name__ == '__main__':
     # Create the .csv with the list of apts with their title and url
     all_apts = BoligportalScrapper.update_apts_list(csv_file_path="./files/all_apts.csv")
 
+    coords_from = [55.71135, 12.569385]
+    coords_to = [55.707877, 12.570332]
+    dist = haversine_distance(coords_from[0], coords_from[1], coords_to[0], coords_to[1])
+
 
     # new = df[
-    #     (df["price"] < 15000) &
-    #     (df["rooms"] > 1) &
-    #     (df["neighborhood"] == "København Ø")
+    #     # (df["price"] < 15000) &
+    #     # (df["rooms"] > 1) &
+    #     # (df["neighborhood"] == "København Ø")
+    #     (df["distance_to_nearest_metro"]>5)
     # ]
+    #
+    # url = new["url"].values[0]
 
     print("end")
 

@@ -3,3 +3,5 @@ scipy==1.11.1
 numpy==1.25.0
 requests
 beautifulsoup4
+matplotlib
+scikit-learn
